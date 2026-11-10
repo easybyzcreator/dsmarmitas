@@ -2188,7 +2188,21 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
 
       const contentHtml = filteredOrders.map((order, index) => {
         const items = Array.isArray(order.items) ? order.items : [];
-        const itemsText = items.map(item => `  ${item.quantity || 1}x ${item.title || 'Item'}${item.selectedSize ? ` (${item.selectedSize.name})` : ''}`).join('\n');
+        const itemsText = items.map(item => {
+          let line = `  ${item.quantity || 1}x ${item.title || 'Item'}${item.selectedSize ? ` (${item.selectedSize.name})` : ''}`;
+          if (item.comboOptions?.items && item.comboOptions.items.length > 0) {
+            line += '\n' + item.comboOptions.items.map((sub: any) => `     • ${sub.quantity}x ${sub.productTitle}`).join('\n');
+          }
+          if (item.cakeOptions) {
+            const cakeDetails = [
+              item.cakeOptions.size ? `Tam: ${item.cakeOptions.size}` : '',
+              item.cakeOptions.dough ? `Massa: ${item.cakeOptions.dough}` : '',
+              item.cakeOptions.fillings?.length ? `Recheio: ${item.cakeOptions.fillings.join(' + ')}` : ''
+            ].filter(Boolean).join(' | ');
+            if (cakeDetails) line += `\n     (${cakeDetails})`;
+          }
+          return line;
+        }).join('\n');
         const name = (order.isB2B || order.isPJ ? (order.b2bCompanyName || order.customerName) : order.customerName) || 'Cliente';
         const scheduled = getOrderScheduledInfo(order);
         const deliveryDate = scheduled.dateDisplay || order.pickupDate || 'N/A';
@@ -2571,8 +2585,35 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
       let itemsHtml = items.map(item => {
         let optionsHtml = '';
         let optionsText = '';
-        if (item.cakeOptions && (item.cakeOptions.size || item.cakeOptions.dough || item.cakeOptions.fillings)) {
-          optionsHtml = `
+        const anyItem = item as any;
+
+        // 1. Sabores Escolhidos no Combo
+        if (item.comboOptions?.items && item.comboOptions.items.length > 0) {
+          const comboLinesHtml = item.comboOptions.items.map((sub: any) => `
+            <div style="font-weight: bold; padding: 1px 0; font-size: 10px; color: #111;">• ${sub.quantity}x ${sub.productTitle}</div>
+          `).join('');
+          optionsHtml += `
+            <div style="font-size: 10px; padding: 4px 6px; margin: 3px 0; background-color: #f7f7f7; border-left: 3px solid #000; border-radius: 3px; line-height: 1.35;">
+              <div style="font-weight: 900; text-transform: uppercase; font-size: 9px; color: #222; margin-bottom: 2px;">SABORES ESCOLHIDOS NO COMBO:</div>
+              ${comboLinesHtml}
+            </div>
+          `;
+          optionsText += `  SABORES ESCOLHIDOS NO COMBO:\n` + item.comboOptions.items.map((sub: any) => `    • ${sub.quantity}x ${sub.productTitle}\n`).join('');
+        }
+
+        // 2. Acompanhamentos extras / selecionados
+        if (anyItem.selectedSides && anyItem.selectedSides.length > 0) {
+          optionsHtml += `
+            <div style="font-size: 10px; color: #333; padding-left: 6px; margin-top: 2px; line-height: 1.25;">
+              <div style="font-weight: bold;">+ ACOMPANHAMENTOS: ${anyItem.selectedSides.join(', ')}</div>
+            </div>
+          `;
+          optionsText += `  + ACOMPANHAMENTOS: ${anyItem.selectedSides.join(', ')}\n`;
+        }
+
+        // 3. Opções de Bolo
+        if (item.cakeOptions && (item.cakeOptions.size || item.cakeOptions.dough || item.cakeOptions.fillings || item.cakeOptions.topping || item.cakeOptions.topper)) {
+          optionsHtml += `
             <div style="font-size: 10px; color: #333; padding-left: 6px; margin-top: 2px; line-height: 1.25;">
               ${item.cakeOptions.size ? `<div>TAMANHO: ${item.cakeOptions.size}</div>` : ''}
               ${item.cakeOptions.dough ? `<div>MASSA: ${item.cakeOptions.dough}</div>` : ''}
@@ -2586,22 +2627,30 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
           if (item.cakeOptions.fillings && item.cakeOptions.fillings.length > 0) optionsText += `  - RECHEIOS: ${item.cakeOptions.fillings.join(', ')}\n`;
           if (item.cakeOptions.topping) optionsText += `  - COBERTURA: ${item.cakeOptions.topping}\n`;
           if (item.cakeOptions.topper) optionsText += `  - TOPPER: ${item.cakeOptions.topper}\n`;
-        } else if (item.sandwichOptions && item.sandwichOptions.fillings && item.sandwichOptions.fillings.length > 0) {
-          optionsHtml = `
+        }
+
+        // 4. Opções de Sanduíches / Tapioca
+        if (item.sandwichOptions && item.sandwichOptions.fillings && item.sandwichOptions.fillings.length > 0) {
+          optionsHtml += `
             <div style="font-size: 10px; color: #333; padding-left: 6px; margin-top: 2px; line-height: 1.25;">
               <div>RECHEIOS: ${item.sandwichOptions.fillings.join(', ')}</div>
             </div>
           `;
           optionsText += `  - RECHEIOS: ${item.sandwichOptions.fillings.join(', ')}\n`;
-        } else if (item.mealOptions) {
-          optionsHtml = `
-            <div style="font-size: 10px; color: #333; padding-left: 6px; margin-top: 2px; line-height: 1.25;">
-              ${item.mealOptions.removals && item.mealOptions.removals.length > 0 ? `<div>REMOVER: ${item.mealOptions.removals.join(', ')}</div>` : ''}
-              ${item.mealOptions.sides && item.mealOptions.sides.length > 0 ? `<div>ACOMPANHAMENTOS: ${item.mealOptions.sides.map((s: any) => s.name).join(', ')}</div>` : ''}
-            </div>
-          `;
-          if (item.mealOptions.removals && item.mealOptions.removals.length > 0) optionsText += `  - REMOVER: ${item.mealOptions.removals.join(', ')}\n`;
-          if (item.mealOptions.sides && item.mealOptions.sides.length > 0) optionsText += `  - ACOMPANHAMENTOS: ${item.mealOptions.sides.map((s: any) => s.name).join(', ')}\n`;
+        }
+
+        // 5. Opções de Refeição (Remoções e Extras)
+        if (item.mealOptions) {
+          if ((item.mealOptions.removals && item.mealOptions.removals.length > 0) || (item.mealOptions.sides && item.mealOptions.sides.length > 0)) {
+            optionsHtml += `
+              <div style="font-size: 10px; color: #333; padding-left: 6px; margin-top: 2px; line-height: 1.25;">
+                ${item.mealOptions.removals && item.mealOptions.removals.length > 0 ? `<div>REMOVER: ${item.mealOptions.removals.join(', ')}</div>` : ''}
+                ${item.mealOptions.sides && item.mealOptions.sides.length > 0 ? `<div>ACOMPANHAMENTOS: ${item.mealOptions.sides.map((s: any) => s.name).join(', ')}</div>` : ''}
+              </div>
+            `;
+            if (item.mealOptions.removals && item.mealOptions.removals.length > 0) optionsText += `  - REMOVER: ${item.mealOptions.removals.join(', ')}\n`;
+            if (item.mealOptions.sides && item.mealOptions.sides.length > 0) optionsText += `  - ACOMPANHAMENTOS: ${item.mealOptions.sides.map((s: any) => s.name).join(', ')}\n`;
+          }
         }
 
         const itemTotal = (Number(item.price || 0) * Number(item.quantity || 1)).toFixed(2).replace('.', ',');
@@ -2919,6 +2968,14 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
       order.items?.forEach(item => {
         const key = item.title;
         summary[key] = (summary[key] || 0) + item.quantity;
+
+        // Sabores selecionados no combo para produção
+        if (item.comboOptions?.items && item.comboOptions.items.length > 0) {
+          item.comboOptions.items.forEach((sub: any) => {
+            const subKey = `• ${sub.productTitle} (do combo)`;
+            summary[subKey] = (summary[subKey] || 0) + (sub.quantity * item.quantity);
+          });
+        }
 
         if (item.mealOptions?.sides) {
           item.mealOptions.sides.forEach(side => {
