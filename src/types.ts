@@ -19,6 +19,7 @@ export interface ProductSize {
   name: string;
   price: number;
   oldPrice?: number;
+  stockQuantity?: number;
 }
 
 export interface NutritionalInfo {
@@ -71,6 +72,8 @@ export interface Product {
   onlyInCombo?: boolean; // Available only in combos and not for individual sale
   comboQuantity?: number; // Total number of individual items/meals in the combo (e.g. 5, 10, 20, 30, 40, 50, etc.)
   comboAllowedProductIds?: string[]; // IDs of products eligible for this combo
+  trackStock?: boolean; // Enable ready-to-deliver stock tracking
+  stockQuantity?: number; // Available ready-to-deliver stock count
   nutritionalInfo?: NutritionalInfo;
 }
 

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { db, auth } from '../firebase';
 import { 
   collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc, 
-  query, orderBy 
+  query, orderBy, runTransaction
 } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { Product, Order, Settings, Category, Side, ImageGallery, VariableCost } from '../types';
@@ -14,7 +14,7 @@ import {
   DollarSign, Coins, ChevronDown, ChevronUp, Users, Download, Truck, Search, Info, Table,
   ChevronLeft, ChevronRight, Clock, LayoutGrid, CalendarDays, Check, ShoppingBag, User, Mail, MapPin, FileText,
   ExternalLink, Utensils, RefreshCw, HelpCircle, Leaf, Code, ToggleLeft, ToggleRight,
-  AlertTriangle, AlertCircle
+  AlertTriangle, AlertCircle, Box, Lightbulb, Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, cleanFirestoreData } from '../lib/utils';
@@ -455,6 +455,8 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
     onlyInCombo: false,
     comboQuantity: 5,
     comboAllowedProductIds: [],
+    trackStock: false,
+    stockQuantity: 0,
     nutritionalInfo: {
       servingSize: '',
       servingsPerContainer: '',
@@ -482,7 +484,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
   });
   const [showNutritionalForm, setShowNutritionalForm] = useState(false);
   const [priceInput, setPriceInput] = useState('');
-  const [sizeForm, setSizeForm] = useState({ name: '', price: '', oldPrice: '' });
+  const [sizeForm, setSizeForm] = useState({ name: '', price: '', oldPrice: '', stockQuantity: '' });
   const [editingSizeId, setEditingSizeId] = useState<string | null>(null);
   const [comboDishSearch, setComboDishSearch] = useState('');
 
@@ -1134,30 +1136,42 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
       return;
     }
     const priceVal = sizeForm.price ? (parseFloat(sizeForm.price.replace(/\D/g, '')) / 100) : 0;
+    const hasStockVal = sizeForm.stockQuantity !== undefined && String(sizeForm.stockQuantity).trim() !== '';
+    const stockVal = hasStockVal ? Math.max(0, parseInt(String(sizeForm.stockQuantity), 10) || 0) : undefined;
     
     if (editingSizeId) {
       setNewProduct((prev: any) => ({
         ...prev,
-        sizes: (prev.sizes || []).map((s: any) => 
-          s.id === editingSizeId ? { ...s, name: sizeForm.name, price: priceVal } : s
-        )
+        sizes: (prev.sizes || []).map((s: any) => {
+          if (s.id !== editingSizeId) return s;
+          const updated: any = { ...s, name: sizeForm.name, price: priceVal };
+          if (stockVal !== undefined) {
+            updated.stockQuantity = stockVal;
+          } else {
+            delete updated.stockQuantity;
+          }
+          return updated;
+        })
       }));
       setEditingSizeId(null);
-      setSizeForm({ name: '', price: '', oldPrice: '' });
+      setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
       toast.success('Opção de tamanho atualizada!');
     } else {
-      const newSizeOption = {
+      const newSizeOption: any = {
         id: Math.random().toString(36).substr(2, 9),
         name: sizeForm.name,
         price: priceVal
       };
+      if (stockVal !== undefined) {
+        newSizeOption.stockQuantity = stockVal;
+      }
       
       setNewProduct((prev: any) => ({
         ...prev,
         sizes: [...(prev.sizes || []), newSizeOption]
       }));
       
-      setSizeForm({ name: '', price: '', oldPrice: '' });
+      setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
       toast.success('Opção de tamanho adicionada!');
     }
   };
@@ -1235,6 +1249,8 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         onlyInCombo: Boolean(newProduct.onlyInCombo),
         comboQuantity: typeof newProduct.comboQuantity === 'number' ? newProduct.comboQuantity : 5,
         comboAllowedProductIds: Array.isArray(newProduct.comboAllowedProductIds) ? newProduct.comboAllowedProductIds : [],
+        trackStock: Boolean(newProduct.trackStock),
+        stockQuantity: Math.max(0, Number(newProduct.stockQuantity) || 0),
         order: typeof newProduct.order === 'number' ? newProduct.order : 0,
         nutritionalInfo: {
           servingSize: newProduct.nutritionalInfo?.servingSize || '',
@@ -1304,8 +1320,11 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         sizes: [],
         cakeGalleryId: '',
         isCombo: false,
+        onlyInCombo: false,
         comboQuantity: 5,
         comboAllowedProductIds: [],
+        trackStock: false,
+        stockQuantity: 0,
         nutritionalInfo: {
           servingSize: '',
           servingsPerContainer: '',
@@ -1334,7 +1353,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
       setPriceInput('');
       setOldPriceInput('');
       setEditingSizeId(null);
-      setSizeForm({ name: '', price: '', oldPrice: '' });
+      setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
     } catch (err) {
       console.error('Erro ao salvar produto:', err);
       toast.error('Erro ao salvar produto.');
@@ -2016,6 +2035,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         pickupDate: manualOrderForm.pickupDate || '',
         observation: manualOrderForm.observation || '',
         items: manualOrderItems.map(item => ({
+          productId: item.productId || null,
           title: item.title,
           quantity: item.quantity,
           price: item.price,
@@ -2032,7 +2052,58 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         orderLanguage: settings?.language || 'pt'
       };
 
-      await addDoc(collection(db, 'pedidos'), orderData);
+      const orderRef = doc(collection(db, 'pedidos'));
+      await runTransaction(db, async (transaction) => {
+        const productIds = Array.from(new Set(manualOrderItems.map(i => i.productId).filter(Boolean))) as string[];
+        const snapshots = new Map<string, any>();
+        for (const pid of productIds) {
+          const snap = await transaction.get(doc(db, 'produtos', pid));
+          if (snap.exists()) {
+            snapshots.set(pid, snap.data());
+          }
+        }
+
+        const updates = new Map<string, any>();
+        for (const item of manualOrderItems) {
+          if (!item.productId) continue;
+          const pData = updates.get(item.productId) || snapshots.get(item.productId);
+          if (!pData) continue;
+
+          let changed = false;
+          const nextData = { ...pData };
+
+          if (nextData.trackStock) {
+            nextData.stockQuantity = Math.max(0, (Number(nextData.stockQuantity) || 0) - (Number(item.quantity) || 1));
+            changed = true;
+          }
+
+          if (item.selectedSize?.id && Array.isArray(nextData.sizes)) {
+            const idx = nextData.sizes.findIndex((s: any) => s.id === item.selectedSize.id);
+            if (idx !== -1 && typeof nextData.sizes[idx].stockQuantity === 'number') {
+              const nextSizes = [...nextData.sizes];
+              nextSizes[idx] = {
+                ...nextSizes[idx],
+                stockQuantity: Math.max(0, nextSizes[idx].stockQuantity - (Number(item.quantity) || 1))
+              };
+              nextData.sizes = nextSizes;
+              changed = true;
+            }
+          }
+
+          if (changed) {
+            updates.set(item.productId, nextData);
+          }
+        }
+
+        for (const [pid, nextData] of updates.entries()) {
+          const payload: any = {};
+          if (nextData.trackStock) payload.stockQuantity = nextData.stockQuantity;
+          if (Array.isArray(nextData.sizes)) payload.sizes = nextData.sizes;
+          transaction.update(doc(db, 'produtos', pid), payload);
+        }
+
+        transaction.set(orderRef, orderData);
+      });
       toast.success('Pedido manual cadastrado com sucesso!');
       setIsAddingOrder(false);
       setManualOrderItems([]);
@@ -7211,7 +7282,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                         {editingSizeId ? '✏️ Editar Opção de Tamanho / Combo' : '➕ Adicionar Nova Opção de Tamanho ou Combo'}
                       </span>
                       <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                        <div className="sm:col-span-7 space-y-1">
+                        <div className="sm:col-span-5 space-y-1">
                           <label className="text-[10px] font-bold uppercase text-gray-700">Nome da Opção / Combo</label>
                           <input 
                             type="text"
@@ -7242,6 +7313,17 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                             />
                           </div>
                         </div>
+                        <div className="sm:col-span-2 space-y-1">
+                          <label className="text-[10px] font-bold uppercase text-gray-700">Estoque (Opcional)</label>
+                          <input 
+                            type="number"
+                            min={0}
+                            placeholder="Livre"
+                            className="w-full p-2.5 text-xs rounded-xl border border-gray-300 bg-white text-black font-bold focus:ring-2 focus:ring-amber-800/30"
+                            value={sizeForm.stockQuantity}
+                            onChange={e => setSizeForm({ ...sizeForm, stockQuantity: e.target.value })}
+                          />
+                        </div>
                         <div className="sm:col-span-2 flex gap-1.5">
                           <button
                             type="button"
@@ -7256,7 +7338,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                               type="button"
                               onClick={() => {
                                 setEditingSizeId(null);
-                                setSizeForm({ name: '', price: '', oldPrice: '' });
+                                setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
                               }}
                               className="px-2.5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
                               title="Cancelar edição"
@@ -7276,9 +7358,21 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                             <div key={idx} className="flex justify-between items-center p-3 bg-white rounded-xl border border-gray-200 shadow-xs">
                               <div>
                                 <span className="font-bold text-xs text-gray-900 block">{size.name}</span>
-                                <span className="text-xs text-emerald-700 font-bold">
-                                  {currencySymbol} {Number(size.price || 0).toFixed(2).replace('.', ',')}
-                                </span>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <span className="text-xs text-emerald-700 font-bold">
+                                    {currencySymbol} {Number(size.price || 0).toFixed(2).replace('.', ',')}
+                                  </span>
+                                  {typeof size.stockQuantity === 'number' && (
+                                    <span className={cn(
+                                      "text-[10px] font-bold px-1.5 py-0.5 rounded-full border",
+                                      size.stockQuantity <= 0
+                                        ? "bg-red-50 text-red-700 border-red-200"
+                                        : "bg-amber-50 text-amber-900 border-amber-200"
+                                    )}>
+                                      {size.stockQuantity <= 0 ? 'Esgotado' : `${size.stockQuantity} un.`}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               <div className="flex items-center gap-1">
                                 <button
@@ -7288,7 +7382,8 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                                     setSizeForm({
                                       name: size.name,
                                       price: (size.price && size.price > 0) ? size.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '',
-                                      oldPrice: ''
+                                      oldPrice: '',
+                                      stockQuantity: typeof size.stockQuantity === 'number' ? String(size.stockQuantity) : ''
                                     });
                                   }}
                                   className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
@@ -7301,7 +7396,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                                   onClick={() => {
                                     if (editingSizeId === size.id) {
                                       setEditingSizeId(null);
-                                      setSizeForm({ name: '', price: '', oldPrice: '' });
+                                      setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
                                     }
                                     setNewProduct({
                                       ...newProduct,
@@ -7639,6 +7734,141 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                 )}
               </div>
 
+              {/* SECTION 4: CONTROLE DE ESTOQUE & QUANTIDADE DISPONÍVEL */}
+              <div className="rounded-2xl border border-amber-200/90 bg-[#fffdf7] overflow-hidden shadow-xs">
+                <div className="p-4 md:p-5 bg-[#fff9eb] border-b border-amber-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start sm:items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 border border-amber-200/60">
+                      <Box size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-black uppercase tracking-wide text-amber-950">
+                          CONTROLE DE ESTOQUE & QUANTIDADE DISPONÍVEL
+                        </span>
+                        {newProduct.trackStock && (
+                          (Number(newProduct.stockQuantity) || 0) <= 0 ? (
+                            <span className="text-[10px] uppercase font-black bg-red-50 text-red-600 px-2.5 py-0.5 rounded-full border border-red-200">
+                              ESGOTADO
+                            </span>
+                          ) : (
+                            <span className="text-[10px] uppercase font-black bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                              {newProduct.stockQuantity} {Number(newProduct.stockQuantity) === 1 ? 'UNIDADE' : 'UNIDADES'}
+                            </span>
+                          )
+                        )}
+                      </div>
+                      <p className="text-xs text-amber-900/75 mt-0.5">
+                        Defina quantas unidades deste prato estão prontas para venda. O contador diminui automaticamente a cada pedido.
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2.5 bg-white px-4 py-2.5 rounded-xl border border-amber-200/80 shadow-xs cursor-pointer shrink-0 select-none hover:bg-amber-50/40 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(newProduct.trackStock)}
+                      onChange={e => setNewProduct({
+                        ...newProduct,
+                        trackStock: e.target.checked,
+                        stockQuantity: typeof newProduct.stockQuantity === 'number' ? newProduct.stockQuantity : 0
+                      })}
+                      className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span className="text-xs font-bold text-gray-800 whitespace-nowrap">
+                      Controlar estoque deste prato
+                    </span>
+                  </label>
+                </div>
+
+                <div className="p-4 md:p-5 space-y-4">
+                  {/* Guia de Uso */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-amber-950">
+                      <Lightbulb size={14} className="text-amber-500" />
+                      <span>GUIA: EM QUAL CASO USAR CADA CONTROLE DE ESTOQUE?</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="p-3.5 rounded-xl bg-white border border-amber-200/80 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-full bg-amber-800 text-white text-[10px] font-black flex items-center justify-center shrink-0">1</span>
+                          <span className="text-xs font-extrabold text-amber-950">Estoque Global (Nesta Seção 4)</span>
+                        </div>
+                        <p className="text-[11px] text-gray-600 leading-relaxed">
+                          <strong className="text-gray-800">Quando usar:</strong> Para pratos de <strong>Preço Único</strong> ou quando você quer um limite total fixo para o prato inteiro.
+                        </p>
+                        <div className="p-2.5 rounded-lg bg-amber-50/80 border border-amber-100 text-[11px] text-amber-950 leading-relaxed">
+                          <strong>Exemplo:</strong> Você tem 20 marmitas prontas deste prato. Marque a caixa <em>"Controlar estoque deste prato"</em> e coloque 20. A cada compra, diminui 1. Ao atingir 0, o prato aparece como <strong className="text-red-700">ESGOTADO</strong>.
+                        </div>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-white border border-amber-200/80 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0">2</span>
+                          <span className="text-xs font-extrabold text-blue-950">Estoque por Tamanho (Na Seção 2 Acima)</span>
+                        </div>
+                        <p className="text-[11px] text-gray-600 leading-relaxed">
+                          <strong className="text-gray-800">Quando usar:</strong> Quando você ativou <strong>"Múltiplos Tamanhos / Combos"</strong> (ex: 300g e 500g) e possui estoques diferentes para cada opção.
+                        </p>
+                        <div className="p-2.5 rounded-lg bg-blue-50/70 border border-blue-100 text-[11px] text-blue-950 leading-relaxed">
+                          <strong>Exemplo:</strong> Você tem 10 potes de 300g e 5 potes de 500g. Preencha direto no campo <em>Estoque</em> de cada opção lá em cima. Se o de 500g esgotar, o de 300g continua à venda!
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Input de Quantidade quando Controle de Estoque Ativado */}
+                  {newProduct.trackStock && (
+                    <div className="space-y-3 pt-1">
+                      <div className="p-4 rounded-xl bg-[#fff8e7] border border-amber-300/80 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-[11px] font-black uppercase tracking-wider text-amber-950">
+                            QUANTIDADE DISPONÍVEL EM ESTOQUE *
+                          </label>
+                          {(Number(newProduct.stockQuantity) || 0) <= 0 ? (
+                            <span className="text-[10px] uppercase font-black bg-red-50 text-red-600 px-2.5 py-0.5 rounded-full border border-red-200">
+                              ESGOTADO
+                            </span>
+                          ) : (
+                            <span className="text-[10px] uppercase font-black bg-emerald-600 text-white px-2.5 py-0.5 rounded-full">
+                              PRONTA ENTREGA
+                            </span>
+                          )}
+                        </div>
+
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          className="w-full sm:w-80 p-3 rounded-xl border border-amber-300 bg-white text-gray-900 font-black text-xl focus:ring-2 focus:ring-amber-500/40 focus:border-amber-500 outline-none"
+                          value={newProduct.stockQuantity ?? 0}
+                          onChange={e => {
+                            const val = e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value, 10) || 0);
+                            setNewProduct({ ...newProduct, stockQuantity: val });
+                          }}
+                          placeholder="0"
+                        />
+
+                        <p className="text-[11px] text-gray-600">
+                          Digite a quantidade pronta entrega. Se colocar 0, o cliente verá como <strong className="text-red-600">ESGOTADO</strong> e não conseguirá adicionar ao carrinho.
+                        </p>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-[#fffbeb] border border-amber-200 flex items-start gap-2.5 text-xs text-amber-950">
+                        <Zap size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                        <div className="leading-relaxed">
+                          <strong className="block font-bold">Baixa Automática nas Vendas:</strong>
+                          <span>
+                            Conforme os clientes fizerem pedidos no cardápio e finalizarem, a quantidade diminuirá automaticamente aqui no painel e no link do cliente em tempo real.
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* ACTION BUTTONS */}
               <div className="flex flex-col sm:flex-row gap-3 pt-2">
                 <button 
@@ -7663,6 +7893,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                         image: '', categoryId: '', isMeal: true, isCustomCake: false, isCustomSandwich: false, customFillings: '', ingredients: '', allowedSides: [], isActive: true,
                         hasSizes: false, sizes: [],
                         isCombo: false, onlyInCombo: false, comboQuantity: 5, comboAllowedProductIds: [],
+                        trackStock: false, stockQuantity: 0,
                         nutritionalInfo: {
                           calories: '',
                           carbs: '',
@@ -7677,7 +7908,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                       setPriceInput('');
                       setOldPriceInput('');
                       setEditingSizeId(null);
-                      setSizeForm({ name: '', price: '', oldPrice: '' });
+                      setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
                       setShowNutritionalForm(false);
                     }}
                     className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gray-200 hover:bg-gray-300 font-bold text-gray-800 cursor-pointer transition-all"
@@ -7758,6 +7989,8 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                               onlyInCombo: product.onlyInCombo || false,
                               comboQuantity: product.comboQuantity || 5,
                               comboAllowedProductIds: product.comboAllowedProductIds || [],
+                              trackStock: product.trackStock || false,
+                              stockQuantity: typeof product.stockQuantity === 'number' ? product.stockQuantity : 0,
                               nutritionalInfo: product.nutritionalInfo || {
                                 servingSize: '',
                                 servingsPerContainer: '',
@@ -7785,7 +8018,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                             });
                             setPriceInput(product.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 }));
                             setEditingSizeId(null);
-                            setSizeForm({ name: '', price: '', oldPrice: '' });
+                            setSizeForm({ name: '', price: '', oldPrice: '', stockQuantity: '' });
                             setOldPriceInput(product.oldPrice ? product.oldPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '');
                             if (product.nutritionalInfo && (product.nutritionalInfo.calories || product.nutritionalInfo.servingSize || product.nutritionalInfo.carbs)) {
                               setShowNutritionalForm(true);
@@ -7805,6 +8038,19 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                           <Trash2 size={18} />
                         </button>
                       </div>
+                      {product.trackStock && (
+                        <div className="absolute top-3 left-3">
+                          {(product.stockQuantity ?? 0) <= 0 ? (
+                            <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-red-600 text-white shadow-sm">
+                              ESGOTADO (0 un.)
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-emerald-700 text-white shadow-sm">
+                              PRONTA ENTREGA • {product.stockQuantity} {product.stockQuantity === 1 ? 'un.' : 'un.'}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="p-5 flex-grow flex flex-col gap-2">
                       <div className="flex justify-between items-start">
@@ -7840,6 +8086,11 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                             {product.sizes.map((s, idx) => (
                               <span key={idx} className="bg-white/70 px-2 py-0.5 rounded border border-black/5 font-medium text-black">
                                 {s.name} ({currencySymbol} {s.price.toFixed(2).replace('.', ',')})
+                                {typeof s.stockQuantity === 'number' && (
+                                  <span className={cn("ml-1 font-bold", s.stockQuantity <= 0 ? "text-red-600" : "text-amber-800")}>
+                                    • {s.stockQuantity <= 0 ? 'Esgotado' : `${s.stockQuantity} un.`}
+                                  </span>
+                                )}
                               </span>
                             ))}
                           </div>

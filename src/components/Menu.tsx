@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebase';
-import { collection, onSnapshot, addDoc, serverTimestamp, doc, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, serverTimestamp, doc, query, orderBy, runTransaction } from 'firebase/firestore';
 import { Product, Order, Settings, Category, CartItem, Side, ProductSize, ImageGallery } from '../types';
 import { Plus, Minus, X, MessageCircle, MessageSquare, Check, Calendar, Building2, User, Phone, MapPin, RefreshCw, ChevronDown, Snowflake, Flame, Utensils, Apple, Sparkles, Info, AlertCircle, CheckCircle2, Clock, Ban, HelpCircle, Leaf, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -689,7 +689,88 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
     }
   }, []);
 
-  const addToCart = (product: Product, customQty: number = 1) => {
+  const getCartQtyForProduct = (productId: string, sizeId?: string): number => {
+    if (sizeId) {
+      return cart
+        .filter(item => item.productId === productId && item.selectedSize?.id === sizeId)
+        .reduce((sum, item) => sum + item.quantity, 0);
+    }
+    let total = cart
+      .filter(item => item.productId === productId)
+      .reduce((sum, item) => sum + item.quantity, 0);
+    cart.forEach(item => {
+      if (item.comboOptions?.items) {
+        item.comboOptions.items.forEach(sub => {
+          if (sub.productId === productId) {
+            total += sub.quantity * item.quantity;
+          }
+        });
+      }
+    });
+    return total;
+  };
+
+  const getProductStockLimit = (product: Product, size?: ProductSize | null): number | null => {
+    const hasSizeStock = size && typeof size.stockQuantity === 'number';
+    const hasGlobalStock = Boolean(product.trackStock);
+    if (hasSizeStock && hasGlobalStock) {
+      return Math.min(Math.max(0, Number(product.stockQuantity ?? 0)), Math.max(0, Number(size.stockQuantity)));
+    }
+    if (hasSizeStock) {
+      return Math.max(0, Number(size.stockQuantity));
+    }
+    if (hasGlobalStock) {
+      return Math.max(0, Number(product.stockQuantity ?? 0));
+    }
+    return null;
+  };
+
+  const isProductOutOfStock = (product: Product): boolean => {
+    if (product.trackStock && Math.max(0, Number(product.stockQuantity ?? 0)) <= 0) {
+      return true;
+    }
+    if (product.hasSizes && product.sizes && product.sizes.length > 0) {
+      const sizesWithStock = product.sizes.filter(s => typeof s.stockQuantity === 'number');
+      if (sizesWithStock.length === product.sizes.length && sizesWithStock.every(s => (s.stockQuantity ?? 0) <= 0)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const canAddProductQty = (product: Product, qtyToAdd: number, size?: ProductSize | null, showToast: boolean = true): boolean => {
+    if (product.trackStock) {
+      const globalLimit = Math.max(0, Number(product.stockQuantity ?? 0));
+      const inCartGlobal = getCartQtyForProduct(product.id);
+      if (globalLimit <= 0) {
+        if (showToast) toast.error(`"${product.title}" está esgotado no momento.`);
+        return false;
+      }
+      if (inCartGlobal + qtyToAdd > globalLimit) {
+        if (showToast) {
+          toast.error(`Estoque insuficiente para "${product.title}"! Disponível: ${globalLimit} ${globalLimit === 1 ? 'unidade' : 'unidades'}.`);
+        }
+        return false;
+      }
+    }
+    if (size && typeof size.stockQuantity === 'number') {
+      const sizeLimit = Math.max(0, Number(size.stockQuantity));
+      const inCartSize = getCartQtyForProduct(product.id, size.id);
+      if (sizeLimit <= 0) {
+        if (showToast) toast.error(`A opção "${size.name}" de "${product.title}" está esgotada.`);
+        return false;
+      }
+      if (inCartSize + qtyToAdd > sizeLimit) {
+        if (showToast) {
+          toast.error(`Estoque insuficiente para "${size.name}"! Disponível: ${sizeLimit} ${sizeLimit === 1 ? 'unidade' : 'unidades'}.`);
+        }
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const addToCart = (product: Product, customQty: number = 1): boolean => {
     const hasSizesOpt = !!(product.sizes && product.sizes.length > 0);
     const hasExclusionsOpt = !!(product.isMeal && product.ingredients && product.ingredients.split(',').map(i => i.trim()).filter(Boolean).length > 0);
     const hasSidesOpt = !!(product.isMeal && product.allowedSides && product.allowedSides.filter(id => sides.some(s => s.id === id)).length > 0);
@@ -701,6 +782,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
     // If we have selectedSize from details modal and NO complex customization is needed, add directly!
     if (hasSizesOpt && selectedSize && !requiresComplexCustomization) {
+      if (!canAddProductQty(product, customQty, selectedSize, true)) return false;
       setCart(prev => {
         const existing = prev.find(item => item.productId === product.id && !item.mealOptions && item.selectedSize?.id === selectedSize.id);
         if (existing) {
@@ -708,23 +790,28 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
         }
         return [...prev, { id: Math.random().toString(36).substr(2, 9), productId: product.id, quantity: customQty, selectedSize: selectedSize }];
       });
-      return;
+      return true;
     }
 
     const requiresCustomization = hasSizesOpt || hasExclusionsOpt || hasSidesOpt || isCustomCakeOpt || isCustomSandwichOpt;
 
     if (requiresCustomization) {
+      if (isProductOutOfStock(product)) {
+        toast.error(`"${product.title}" está esgotado no momento.`);
+        return false;
+      }
       setSelectedProductForCustom(product);
       setMealSelections({
         removals: []
       });
       setSideQuantities({});
       
-      // Preserve existing selectedSize if valid for this product, otherwise set first option
+      // Preserve existing selectedSize if valid for this product, otherwise set first available option
       if (product.sizes && product.sizes.length > 0) {
         const isAlreadySelectedSizeValid = selectedSize && product.sizes.some(s => s.id === selectedSize.id);
         if (!isAlreadySelectedSizeValid) {
-          setSelectedSize(product.sizes[0]);
+          const firstAvailable = product.sizes.find(s => typeof s.stockQuantity !== 'number' || s.stockQuantity > 0) || product.sizes[0];
+          setSelectedSize(firstAvailable);
         }
       } else {
         setSelectedSize(null);
@@ -743,8 +830,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
         setSelectedSandwichFillings([]);
       }
       setIsCustomModalOpen(true);
-      return;
+      return true;
     }
+
+    if (!canAddProductQty(product, customQty, null, true)) return false;
 
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id && !item.mealOptions && !item.selectedSize);
@@ -753,9 +842,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
       }
       return [...prev, { id: Math.random().toString(36).substr(2, 9), productId: product.id, quantity: customQty }];
     });
+    return true;
   };
 
   const incrementSizeQty = (product: Product, size: ProductSize) => {
+    if (!canAddProductQty(product, 1, size, true)) return;
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id && item.selectedSize?.id === size.id && !item.mealOptions && !item.cakeOptions);
       if (existing) {
@@ -796,6 +887,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
       if (activeFillings.length === 0) {
         toast.error(settings.language === 'en' ? 'Choose at least 1 option!' : 'Escolha pelo menos 1 opção!');
+        return;
+      }
+
+      const totalSandwichQty = activeFillings.reduce((sum, item) => sum + item.qty, 0);
+      if (!canAddProductQty(selectedProductForCustom, totalSandwichQty, selectedSize, true)) {
         return;
       }
 
@@ -841,7 +937,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
     if (selectedProductForCustom.isCustomCake) {
       const maxFillings = settings.cakeFillingsMax || 2;
       if (selectedFillings.length > maxFillings) {
-        toast.error(`Choose at most ${maxFillings} fillings!`);
+        toast.error(`Escolha no máximo ${maxFillings} recheios!`);
+        return;
+      }
+      if (!canAddProductQty(selectedProductForCustom, customItemQuantity, null, true)) {
         return;
       }
       
@@ -883,6 +982,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
       setIsCustomModalOpen(false);
       setSelectedProductForCustom(null);
+      return;
+    }
+
+    if (!canAddProductQty(selectedProductForCustom, customItemQuantity, selectedSize, true)) {
       return;
     }
     
@@ -943,6 +1046,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
         return;
       }
 
+      const totalSandwichQty = activeFillings.reduce((sum, item) => sum + item.qty, 0);
+      if (!canAddProductQty(product, totalSandwichQty, selectedSize, true)) {
+        return;
+      }
+
       setCart(prev => {
         let currentCart = [...prev];
 
@@ -986,7 +1094,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
     if (product.isCustomCake) {
       const maxFillings = settings.cakeFillingsMax || 2;
       if (selectedFillings.length > maxFillings) {
-        toast.error(`Choose at most ${maxFillings} fillings!`);
+        toast.error(`Escolha no máximo ${maxFillings} recheios!`);
+        return;
+      }
+      if (!canAddProductQty(product, customItemQuantity, null, true)) {
         return;
       }
       
@@ -1028,6 +1139,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
       setSelectedProductForDetails(null);
       toast.success(settings.language === 'en' ? 'Successfully added to request list!' : 'Adicionado com sucesso ao pedido!');
+      return;
+    }
+
+    if (!canAddProductQty(product, customItemQuantity, selectedSize, true)) {
       return;
     }
     
@@ -1079,6 +1194,9 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
   const handleAddComboToCart = () => {
     if (!selectedComboProduct) return;
+    if (!canAddProductQty(selectedComboProduct, 1, null, true)) {
+      return;
+    }
     const targetQty = Number(selectedComboProduct.comboQuantity) || 5;
     const currentTotal = (Object.values(comboDishSelections) as number[]).reduce((a, b) => a + b, 0);
 
@@ -1097,6 +1215,18 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
           quantity: qty as number
         };
       });
+
+    for (const sub of comboItems) {
+      const dish = products.find(p => p.id === sub.productId);
+      if (dish && dish.trackStock) {
+        const limit = Math.max(0, Number(dish.stockQuantity ?? 0));
+        const inCart = getCartQtyForProduct(dish.id);
+        if (inCart + sub.quantity > limit) {
+          toast.error(`Estoque insuficiente para "${dish.title}"! Disponível: ${limit} ${limit === 1 ? 'unidade' : 'unidades'}.`);
+          return;
+        }
+      }
+    }
 
     setCart(prev => [
       ...prev,
@@ -1243,6 +1373,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
         } : null;
 
         return {
+          productId: product.id,
           title: item.selectedSize ? `${product.title} (${item.selectedSize.name})` : product.title,
           quantity: item.quantity,
           price: itemPrice,
@@ -1306,7 +1437,89 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
       };
 
       console.log('Finalizando pedido...', orderData);
-      await addDoc(collection(db, 'pedidos'), orderData);
+      const newOrderRef = doc(collection(db, 'pedidos'));
+      try {
+        await runTransaction(db, async (transaction) => {
+          const allProductIds = new Set<string>();
+          cart.forEach(item => {
+            allProductIds.add(item.productId);
+            if (item.comboOptions?.items) {
+              item.comboOptions.items.forEach(sub => allProductIds.add(sub.productId));
+            }
+          });
+
+          const snapshots = new Map<string, any>();
+          for (const pid of allProductIds) {
+            const snap = await transaction.get(doc(db, 'produtos', pid));
+            if (snap.exists()) {
+              snapshots.set(pid, snap.data());
+            }
+          }
+
+          const updates = new Map<string, any>();
+
+          const consumeStock = (pid: string, qty: number, sizeId?: string, sizeName?: string) => {
+            const currentData = updates.get(pid) || snapshots.get(pid);
+            if (!currentData) return;
+
+            let modified = false;
+            const nextData = { ...currentData };
+
+            if (nextData.trackStock) {
+              const available = Math.max(0, Number(nextData.stockQuantity ?? 0));
+              if (available < qty) {
+                throw new Error(`ESTOQUE_INSUFICIENTE:${nextData.title || 'Produto'}:${available}`);
+              }
+              nextData.stockQuantity = available - qty;
+              modified = true;
+            }
+
+            if (sizeId && Array.isArray(nextData.sizes)) {
+              const sIdx = nextData.sizes.findIndex((s: any) => s.id === sizeId);
+              if (sIdx !== -1 && typeof nextData.sizes[sIdx].stockQuantity === 'number') {
+                const sizeAvailable = Math.max(0, Number(nextData.sizes[sIdx].stockQuantity));
+                if (sizeAvailable < qty) {
+                  throw new Error(`ESTOQUE_INSUFICIENTE:${nextData.title || 'Produto'} (${sizeName || nextData.sizes[sIdx].name}):${sizeAvailable}`);
+                }
+                const nextSizes = [...nextData.sizes];
+                nextSizes[sIdx] = { ...nextSizes[sIdx], stockQuantity: sizeAvailable - qty };
+                nextData.sizes = nextSizes;
+                modified = true;
+              }
+            }
+
+            if (modified) {
+              updates.set(pid, nextData);
+            }
+          };
+
+          for (const item of cart) {
+            consumeStock(item.productId, item.quantity, item.selectedSize?.id, item.selectedSize?.name);
+            if (item.comboOptions?.items) {
+              for (const sub of item.comboOptions.items) {
+                consumeStock(sub.productId, sub.quantity * item.quantity);
+              }
+            }
+          }
+
+          for (const [pid, nextData] of updates.entries()) {
+            const payload: any = {};
+            if (nextData.trackStock) payload.stockQuantity = nextData.stockQuantity;
+            if (Array.isArray(nextData.sizes)) payload.sizes = nextData.sizes;
+            transaction.update(doc(db, 'produtos', pid), payload);
+          }
+
+          transaction.set(newOrderRef, orderData);
+        });
+      } catch (txError: any) {
+        if (typeof txError?.message === 'string' && txError.message.startsWith('ESTOQUE_INSUFICIENTE:')) {
+          const [, prodName, avail] = txError.message.split(':');
+          toast.error(`Estoque insuficiente para "${prodName}". Restam apenas ${avail} unidade(s). Ajuste seu carrinho.`);
+          setIsSubmitting(false);
+          return;
+        }
+        throw txError;
+      }
       
       const now = new Date();
       const timeStr = now.toLocaleTimeString(settings.language === 'en' ? 'en-US' : 'pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
@@ -1939,6 +2152,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         }
                         
                         if (product.isCombo) {
+                          if (isProductOutOfStock(product)) {
+                            toast.error(`"${product.title}" está esgotado no momento.`);
+                            return;
+                          }
                           setSelectedComboProduct(product);
                           setComboDishSelections({});
                           setComboSearchTerm('');
@@ -1947,27 +2164,61 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
                         setSelectedProductForDetails(product);
                         if (product.sizes && product.sizes.length > 0) {
-                          setSelectedSize(product.sizes[0]);
+                          const firstAvailable = product.sizes.find(s => typeof s.stockQuantity !== 'number' || s.stockQuantity > 0) || product.sizes[0];
+                          setSelectedSize(firstAvailable);
                         } else {
                           setSelectedSize(null);
                         }
                       }}
-                      className="glass rounded-2xl p-3.5 sm:p-4 md:p-5 flex gap-3.5 sm:gap-4 items-start sm:items-center cursor-pointer hover:shadow-md transition-all duration-300 w-full"
+                      className={cn(
+                        "glass rounded-2xl p-3.5 sm:p-4 md:p-5 flex gap-3.5 sm:gap-4 items-start sm:items-center cursor-pointer hover:shadow-md transition-all duration-300 w-full",
+                        isProductOutOfStock(product) && "opacity-75"
+                      )}
                     >
                       <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-xl overflow-hidden flex-shrink-0 bg-white/50 shadow-sm border border-black/5 self-start sm:self-center">
                         <img src={product.image} alt={product.title} className="w-full h-full object-cover" />
                       </div>
                       <div className="flex-1 min-w-0 text-black flex flex-col justify-between self-stretch gap-2">
                         <div className="space-y-1">
-                          <div className="flex items-start justify-between gap-1.5 flex-wrap">
-                            <h3 className="text-sm sm:text-base md:text-lg font-serif font-bold text-black leading-snug">
-                              {product.title}
-                            </h3>
-                            {product.isCombo && (
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
-                                🍱 Combo {product.comboQuantity || 5} marmitas
-                              </span>
-                            )}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap min-w-0">
+                              <h3 className="text-sm sm:text-base md:text-lg font-serif font-bold text-black leading-snug">
+                                {product.title}
+                              </h3>
+                              {product.trackStock && (() => {
+                                const stockQty = Math.max(0, Number(product.stockQuantity ?? 0));
+                                return stockQty > 0 ? (
+                                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
+                                    {stockQty} {stockQty === 1 ? 'unidade' : 'unidades'}
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 whitespace-nowrap">
+                                    Esgotado
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap justify-end shrink-0">
+                              {(() => {
+                                const tracked = Boolean(product.trackStock) || Boolean(product.hasSizes && product.sizes?.some(s => typeof s.stockQuantity === 'number'));
+                                if (!tracked) return null;
+                                const out = isProductOutOfStock(product);
+                                return out ? (
+                                  <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-red-600 text-white whitespace-nowrap shadow-xs">
+                                    ESGOTADO
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#047857] text-white whitespace-nowrap shadow-xs">
+                                    PRONTA ENTREGA
+                                  </span>
+                                );
+                              })()}
+                              {product.isCombo && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
+                                  🍱 Combo {product.comboQuantity || 5} marmitas
+                                </span>
+                              )}
+                            </div>
                           </div>
                           {product.description && (
                             <p className="text-[11px] sm:text-xs text-black/75 leading-relaxed line-clamp-2">
@@ -1979,6 +2230,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                             onClick={(e) => {
                               e.stopPropagation();
                               if (product.isCombo) {
+                                if (isProductOutOfStock(product)) {
+                                  toast.error(`"${product.title}" está esgotado no momento.`);
+                                  return;
+                                }
                                 setSelectedComboProduct(product);
                                 setComboDishSelections({});
                                 setComboSearchTerm('');
@@ -1986,7 +2241,8 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                               }
                               setSelectedProductForDetails(product);
                               if (product.sizes && product.sizes.length > 0) {
-                                setSelectedSize(product.sizes[0]);
+                                const firstAvailable = product.sizes.find(s => typeof s.stockQuantity !== 'number' || s.stockQuantity > 0) || product.sizes[0];
+                                setSelectedSize(firstAvailable);
                               } else {
                                 setSelectedSize(null);
                               }
@@ -2031,6 +2287,15 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
                           <div className="flex-shrink-0 flex items-center justify-end cart-button-area pl-1 z-10">
                             {(() => {
+                              const outOfStock = isProductOutOfStock(product);
+                              if (outOfStock) {
+                                return (
+                                  <span className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-black text-[11px] uppercase tracking-wider">
+                                    Esgotado
+                                  </span>
+                                );
+                              }
+
                               if (product.isCombo) {
                                 return (
                                   <button
@@ -2077,7 +2342,8 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                           e.stopPropagation();
                                           setSelectedProductForDetails(product);
                                           if (product.sizes && product.sizes.length > 0) {
-                                            setSelectedSize(product.sizes[0]);
+                                            const firstAvailable = product.sizes.find(s => typeof s.stockQuantity !== 'number' || s.stockQuantity > 0) || product.sizes[0];
+                                            setSelectedSize(firstAvailable);
                                           } else {
                                             setSelectedSize(null);
                                           }
@@ -2096,7 +2362,8 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                         e.stopPropagation();
                                         setSelectedProductForDetails(product);
                                         if (product.sizes && product.sizes.length > 0) {
-                                          setSelectedSize(product.sizes[0]);
+                                          const firstAvailable = product.sizes.find(s => typeof s.stockQuantity !== 'number' || s.stockQuantity > 0) || product.sizes[0];
+                                          setSelectedSize(firstAvailable);
                                         } else {
                                           setSelectedSize(null);
                                         }
@@ -2478,6 +2745,20 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                 <button 
                                   type="button"
                                   onClick={() => {
+                                    if (!canAddProductQty(product, 1, item.selectedSize, true)) return;
+                                    if (item.comboOptions?.items) {
+                                      for (const sub of item.comboOptions.items) {
+                                        const dish = products.find(p => p.id === sub.productId);
+                                        if (dish && dish.trackStock) {
+                                          const limit = Math.max(0, Number(dish.stockQuantity ?? 0));
+                                          const inCart = getCartQtyForProduct(dish.id);
+                                          if (inCart + sub.quantity > limit) {
+                                            toast.error(`Estoque insuficiente para "${dish.title}"! Disponível: ${limit} ${limit === 1 ? 'unidade' : 'unidades'}.`);
+                                            return;
+                                          }
+                                        }
+                                      }
+                                    }
                                     setCart(prev => prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i));
                                   }}
                                   className="w-8 h-8 rounded-full flex items-center justify-center shadow-sm font-bold active:scale-95 transition-all cursor-pointer select-none"
@@ -3355,10 +3636,29 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
                 <div className="p-6 md:p-8 space-y-6">
                   {/* Title & Stats */}
-                  <div className="space-y-1">
-                    <h2 className="text-2xl md:text-3xl font-serif font-black tracking-tight text-black leading-tight">
-                      {selectedProductForDetails.title}
-                    </h2>
+                  <div className="space-y-1.5">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <h2 className="text-2xl md:text-3xl font-serif font-black tracking-tight text-black leading-tight">
+                        {selectedProductForDetails.title}
+                      </h2>
+                      {selectedProductForDetails.trackStock && (() => {
+                        const sq = Math.max(0, Number(selectedProductForDetails.stockQuantity ?? 0));
+                        return sq > 0 ? (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#047857] text-white whitespace-nowrap">
+                              PRONTA ENTREGA
+                            </span>
+                            <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
+                              {sq} {sq === 1 ? 'unidade' : 'unidades'}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-red-600 text-white whitespace-nowrap">
+                            ESGOTADO
+                          </span>
+                        );
+                      })()}
+                    </div>
                     {selectedProductForDetails.categoryTitle && (
                       <span className="inline-block px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider bg-orange-100 text-orange-950 rounded-lg">
                         {selectedProductForDetails.categoryTitle}
@@ -3461,21 +3761,26 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                             const requiresCustomization = hasExclusionsOpt || hasSidesOpt || isCustomCakeOpt || isCustomSandwichOpt;
 
                             if (requiresCustomization) {
+                              const sizeStock = typeof s.stockQuantity === 'number' ? Math.max(0, s.stockQuantity) : null;
+                              const isSizeOut = sizeStock !== null && sizeStock <= 0;
                               return (
                                 <button
                                   key={idx}
                                   type="button"
+                                  disabled={isSizeOut}
                                   onClick={() => {
+                                    if (isSizeOut) return;
                                     setSelectedSize(s);
                                     if (selectedProductForDetails.isCustomSandwich) {
                                       setSelectedSandwichFillings([]);
                                     }
                                   }}
                                   className={cn(
-                                    "w-full flex justify-between items-center p-3.5 rounded-2xl font-bold text-black text-xs border-2 text-left transition-all cursor-pointer",
-                                    isSelected 
+                                    "w-full flex justify-between items-center p-3.5 rounded-2xl font-bold text-black text-xs border-2 text-left transition-all",
+                                    isSizeOut ? "opacity-50 cursor-not-allowed border-gray-200 bg-gray-100" : "cursor-pointer",
+                                    !isSizeOut && (isSelected 
                                       ? "border-blue-500 bg-white shadow-md scale-[1.01]" 
-                                      : "border-gray-200/50 bg-white/80 hover:border-gray-300"
+                                      : "border-gray-200/50 bg-white/80 hover:border-gray-300")
                                   )}
                                 >
                                   <div className="flex items-center gap-2.5">
@@ -3486,7 +3791,19 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                       {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
                                     </div>
                                     <div className="flex flex-col">
-                                      <span className="text-sm font-bold text-black">{s.name}</span>
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="text-sm font-bold text-black">{s.name}</span>
+                                        {sizeStock !== null && (
+                                          <span className={cn(
+                                            "text-[10px] font-bold px-2 py-0.5 rounded-full border",
+                                            sizeStock <= 0
+                                              ? "bg-red-100 text-red-700 border-red-200"
+                                              : "bg-[#fef3c7] text-[#78350f] border-[#fde68a]"
+                                          )}>
+                                            {sizeStock <= 0 ? 'Esgotado' : `${sizeStock} ${sizeStock === 1 ? 'unidade' : 'unidades'}`}
+                                          </span>
+                                        )}
+                                      </div>
                                       {s.price && s.price > 0 && (
                                         <span className="text-xs text-gray-500 font-extrabold mt-0.5">
                                           {currencySymbol}{s.price.toFixed(2)}
@@ -3494,20 +3811,34 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                       )}
                                     </div>
                                   </div>
-                                  {isSelected && <Check size={14} className="text-blue-500" />}
+                                  {isSelected && !isSizeOut && <Check size={14} className="text-blue-500" />}
                                 </button>
                               );
                             }
 
                             const cartItem = cart.find(item => item.productId === selectedProductForDetails.id && item.selectedSize?.id === s.id && !item.mealOptions);
                             const qty = cartItem ? cartItem.quantity : 0;
+                            const sizeStock = typeof s.stockQuantity === 'number' ? Math.max(0, s.stockQuantity) : null;
+                            const isSizeOut = sizeStock !== null && sizeStock <= 0;
                             return (
                               <div
                                 key={idx}
                                 className="flex justify-between items-center p-3.5 bg-white/80 border border-gray-200/50 rounded-2xl font-bold text-black text-xs"
                               >
                                 <div className="flex flex-col">
-                                  <span className="text-sm font-bold text-black">{s.name}</span>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-bold text-black">{s.name}</span>
+                                    {sizeStock !== null && (
+                                      <span className={cn(
+                                        "text-[10px] font-bold px-2 py-0.5 rounded-full border",
+                                        sizeStock <= 0
+                                          ? "bg-red-100 text-red-700 border-red-200"
+                                          : "bg-[#fef3c7] text-[#78350f] border-[#fde68a]"
+                                      )}>
+                                        {sizeStock <= 0 ? 'Esgotado' : `${sizeStock} ${sizeStock === 1 ? 'unidade' : 'unidades'}`}
+                                      </span>
+                                    )}
+                                  </div>
                                   {s.price && s.price > 0 && (
                                     <span className="text-xs text-gray-500 font-extrabold mt-0.5">
                                       {currencySymbol}{s.price.toFixed(2)}
@@ -3516,7 +3847,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                 </div>
                                 
                                 <div className="flex items-center gap-2">
-                                  {qty > 0 ? (
+                                  {isSizeOut && qty === 0 ? (
+                                    <span className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-black text-[10px] uppercase">
+                                      Esgotado
+                                    </span>
+                                  ) : qty > 0 ? (
                                     <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-full border border-gray-200">
                                       <button
                                         type="button"
@@ -4236,7 +4571,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         <button
                           id="details-modal-qty-inc-btn"
                           type="button"
-                          onClick={() => setCustomItemQuantity(prev => prev + 1)}
+                          onClick={() => {
+                            if (!canAddProductQty(selectedProductForDetails, customItemQuantity + 1, selectedSize, true)) return;
+                            setCustomItemQuantity(prev => prev + 1);
+                          }}
                           className="w-8 h-8 rounded-full flex items-center justify-center text-white shadow-md cursor-pointer active:scale-95 transition-all text-sm font-bold"
                           style={{ backgroundColor: settings.primaryColor || '#865d39' }}
                         >
@@ -4313,7 +4651,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
 
                   const totalPrice = basePrice + sidesPrice;
 
+                  const isGlobalOut = isProductOutOfStock(selectedProductForDetails);
                   const getButtonLabel = () => {
+                    if (isGlobalOut) {
+                      return 'Produto Esgotado';
+                    }
                     if (isCustomCakeOpt && isCakeIncomplete) {
                       return 'Complete as opções primeiro';
                     }
@@ -4323,7 +4665,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                     return 'Adicionar ao Pedido';
                   };
 
-                  const isDisabled = !!isCakeIncomplete || !!isSandwichIncomplete;
+                  const isDisabled = !!isGlobalOut || !!isCakeIncomplete || !!isSandwichIncomplete;
 
                   const totalQty = selectedProductForDetails.isCustomSandwich
                     ? (Object.values(sandwichFillingQuantities) as number[]).reduce((sum, q) => sum + q, 0)
@@ -4346,9 +4688,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                           if (requiresFullCustomization) {
                             addDetailedProductToCart(selectedProductForDetails);
                           } else {
-                            addToCart(selectedProductForDetails, customItemQuantity);
-                            setSelectedProductForDetails(null);
-                            toast.success('Adicionado com sucesso ao pedido!');
+                            const added = addToCart(selectedProductForDetails, customItemQuantity);
+                            if (added) {
+                              setSelectedProductForDetails(null);
+                              toast.success('Adicionado com sucesso ao pedido!');
+                            }
                           }
                         }}
                         className={cn(
@@ -4358,7 +4702,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         style={{ backgroundColor: settings.primaryColor || '#865d39', color: getContrastText(settings.primaryColor || '#865d39') }}
                       >
                         <span>{getButtonLabel()}</span>
-                        {totalPrice > 0 && (
+                        {totalPrice > 0 && !isGlobalOut && (
                           <span className="opacity-80 font-normal">
                             ({currencySymbol}{(totalPrice * totalQty).toFixed(2)})
                           </span>
@@ -4545,14 +4889,17 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                       {availableDishes.map((dish) => {
                         const qty = comboDishSelections[dish.id] || 0;
                         const cat = categories.find(c => c.id === dish.categoryId);
-                        const canAddMore = currentTotal < targetQty;
+                        const dishStockLimit = dish.trackStock ? Math.max(0, Number(dish.stockQuantity ?? 0)) : null;
+                        const dishRemaining = dishStockLimit !== null ? Math.max(0, dishStockLimit - getCartQtyForProduct(dish.id) - qty) : null;
+                        const canAddMore = currentTotal < targetQty && (dishRemaining === null || dishRemaining > 0);
 
                         return (
                           <div 
                             key={dish.id}
                             className={cn(
                               "p-3 rounded-2xl border transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3",
-                              qty > 0 ? "bg-white border-amber-300 shadow-sm" : "bg-white/70 border-gray-200 hover:bg-white"
+                              qty > 0 ? "bg-white border-amber-300 shadow-sm" : "bg-white/70 border-gray-200 hover:bg-white",
+                              dishStockLimit === 0 && "opacity-60"
                             )}
                           >
                             <div className="flex items-start gap-3 min-w-0 flex-grow">
@@ -4565,12 +4912,24 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                               </div>
 
                               <div className="min-w-0 space-y-1">
-                                <h4 
-                                  className="font-bold text-sm sm:text-base leading-snug break-words"
-                                  style={{ color: settings.primaryColor || '#865d39' }}
-                                >
-                                  {dish.title}
-                                </h4>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <h4 
+                                    className="font-bold text-sm sm:text-base leading-snug break-words"
+                                    style={{ color: settings.primaryColor || '#865d39' }}
+                                  >
+                                    {dish.title}
+                                  </h4>
+                                  {dishStockLimit !== null && (
+                                    <span className={cn(
+                                      "text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap",
+                                      dishStockLimit <= 0
+                                        ? "bg-red-100 text-red-700 border-red-200"
+                                        : "bg-[#fef3c7] text-[#78350f] border-[#fde68a]"
+                                    )}>
+                                      {dishStockLimit <= 0 ? 'Esgotado' : `${dishStockLimit} ${dishStockLimit === 1 ? 'unidade' : 'unidades'}`}
+                                    </span>
+                                  )}
+                                </div>
 
                                 {/* Button to view full description and nutritional table */}
                                 <button
@@ -4618,7 +4977,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                   type="button"
                                   disabled={!canAddMore}
                                   onClick={() => {
-                                    if (!canAddMore) {
+                                    if (dishRemaining !== null && dishRemaining <= 0) {
+                                      toast.error(`Estoque máximo atingido para "${dish.title}"!`);
+                                      return;
+                                    }
+                                    if (currentTotal >= targetQty) {
                                       toast.error(`Você já atingiu o limite de ${targetQty} marmitas deste combo!`);
                                       return;
                                     }
@@ -5485,13 +5848,27 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                           {selectedProductForCustom.sizes.map((s) => {
                             const cartItem = cart.find(item => item.productId === selectedProductForCustom.id && item.selectedSize?.id === s.id && !item.mealOptions);
                             const qty = cartItem ? cartItem.quantity : 0;
+                            const sizeStock = typeof s.stockQuantity === 'number' ? Math.max(0, s.stockQuantity) : null;
+                            const isSizeOut = sizeStock !== null && sizeStock <= 0;
                             return (
                               <div
                                 key={s.id}
                                 className="flex justify-between items-center p-3.5 bg-white border border-gray-200 rounded-2xl font-bold text-black text-xs shadow-sm"
                               >
                                 <div className="flex flex-col">
-                                  <span className="text-sm font-bold text-black">{s.name}</span>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-bold text-black">{s.name}</span>
+                                    {sizeStock !== null && (
+                                      <span className={cn(
+                                        "text-[10px] font-bold px-2 py-0.5 rounded-full border",
+                                        sizeStock <= 0
+                                          ? "bg-red-100 text-red-700 border-red-200"
+                                          : "bg-[#fef3c7] text-[#78350f] border-[#fde68a]"
+                                      )}>
+                                        {sizeStock <= 0 ? 'Esgotado' : `${sizeStock} ${sizeStock === 1 ? 'unidade' : 'unidades'}`}
+                                      </span>
+                                    )}
+                                  </div>
                                   {s.price && s.price > 0 && (
                                     <span className="text-xs text-gray-500 font-extrabold mt-0.5">
                                       {currencySymbol}{s.price.toFixed(2)}
@@ -5500,7 +5877,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                 </div>
                                 
                                 <div className="flex items-center gap-2">
-                                  {qty > 0 ? (
+                                  {isSizeOut && qty === 0 ? (
+                                    <span className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-black text-[10px] uppercase">
+                                      Esgotado
+                                    </span>
+                                  ) : qty > 0 ? (
                                     <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-full border border-gray-200">
                                       <button
                                         type="button"
@@ -5680,7 +6061,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                       <button
                         id="custom-modal-qty-inc-btn"
                         type="button"
-                        onClick={() => setCustomItemQuantity(prev => prev + 1)}
+                        onClick={() => {
+                          if (!canAddProductQty(selectedProductForCustom, customItemQuantity + 1, selectedSize, true)) return;
+                          setCustomItemQuantity(prev => prev + 1);
+                        }}
                         className="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-md cursor-pointer active:scale-95 transition-all text-lg font-bold"
                         style={{ backgroundColor: settings.primaryColor || '#865d39' }}
                       >
