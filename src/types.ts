@@ -71,6 +71,7 @@ export interface Product {
   isCombo?: boolean; // Combo item where customer selects up to comboQuantity flavors
   onlyInCombo?: boolean; // Available only in combos and not for individual sale
   comboQuantity?: number; // Total number of individual items/meals in the combo (e.g. 5, 10, 20, 30, 40, 50, etc.)
+  comboMaxPerDish?: number; // Max quantity allowed per dish inside the combo (0 or undefined = unlimited)
   comboAllowedProductIds?: string[]; // IDs of products eligible for this combo
   trackStock?: boolean; // Enable ready-to-deliver stock tracking
   stockQuantity?: number; // Available ready-to-deliver stock count

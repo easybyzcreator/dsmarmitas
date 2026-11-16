@@ -1216,7 +1216,12 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
         };
       });
 
+    const maxPerDish = Number(selectedComboProduct.comboMaxPerDish) || 0;
     for (const sub of comboItems) {
+      if (maxPerDish > 0 && sub.quantity > maxPerDish) {
+        toast.error(`Limite deste combo: máximo de ${maxPerDish} ${maxPerDish === 1 ? 'unidade' : 'unidades'} por prato (${sub.productTitle}).`);
+        return;
+      }
       const dish = products.find(p => p.id === sub.productId);
       if (dish && dish.trackStock) {
         const limit = Math.max(0, Number(dish.stockQuantity ?? 0));
@@ -2214,9 +2219,16 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                 );
                               })()}
                               {product.isCombo && (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
-                                  🍱 Combo {product.comboQuantity || 5} marmitas
-                                </span>
+                                <>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
+                                    🍱 Combo {product.comboQuantity || 5} marmitas
+                                  </span>
+                                  {product.comboMaxPerDish && product.comboMaxPerDish > 0 && (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
+                                      Máx. {product.comboMaxPerDish}x por prato
+                                    </span>
+                                  )}
+                                </>
                               )}
                             </div>
                           </div>
@@ -4775,6 +4787,8 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
               {/* Progress & Target Lock Banner */}
               {(() => {
                 const targetQty = Number(selectedComboProduct.comboQuantity) || 5;
+                const maxPerDish = Number(selectedComboProduct.comboMaxPerDish) || 0;
+                const minDistinct = maxPerDish > 0 ? Math.ceil(targetQty / maxPerDish) : 0;
                 const currentTotal = (Object.values(comboDishSelections) as number[]).reduce((a, b) => a + b, 0);
                 const isComplete = currentTotal === targetQty;
                 const remaining = targetQty - currentTotal;
@@ -4787,16 +4801,23 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                       ? "bg-emerald-50/90 border-emerald-200 text-emerald-950" 
                       : "bg-amber-50/90 border-amber-200 text-amber-950"
                   )}>
-                    <div className="flex items-center justify-between text-xs font-black uppercase tracking-wide">
+                    <div className="flex items-center justify-between gap-2 flex-wrap text-xs font-black uppercase tracking-wide">
                       <span className="flex items-center gap-1.5">
                         {isComplete ? '✓ Combo Completo!' : `Escolha seus sabores:`}
                       </span>
-                      <span className={cn(
-                        "px-2.5 py-0.5 rounded-full text-xs font-bold",
-                        isComplete ? "bg-emerald-200 text-emerald-900" : "bg-amber-200 text-amber-900"
-                      )}>
-                        {currentTotal} de {targetQty} marmitas selecionadas
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {maxPerDish > 0 && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-white/90 text-amber-950 border border-amber-300">
+                            Máx. {maxPerDish}x por prato
+                          </span>
+                        )}
+                        <span className={cn(
+                          "px-2.5 py-0.5 rounded-full text-xs font-bold",
+                          isComplete ? "bg-emerald-200 text-emerald-900" : "bg-amber-200 text-amber-900"
+                        )}>
+                          {currentTotal} de {targetQty} marmitas selecionadas
+                        </span>
+                      </div>
                     </div>
 
                     {/* Visual Progress Bar */}
@@ -4810,21 +4831,30 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                       />
                     </div>
 
-                    <p className="text-[11px] font-medium leading-tight">
-                      {isComplete ? (
-                        <span className="text-emerald-800 font-bold">
-                          Tudo pronto! Você selecionou exatamente as {targetQty} marmitas. Agora clique no botão abaixo para adicionar ao seu pedido.
-                        </span>
-                      ) : remaining > 0 ? (
-                        <span className="text-amber-900">
-                          Selecione mais <strong>{remaining} marmita(s)</strong> para atingir o limite de {targetQty} marmitas deste combo.
-                        </span>
-                      ) : (
-                        <span className="text-red-700 font-bold">
-                          Você ultrapassou o limite do combo! Remova {Math.abs(remaining)} marmita(s).
-                        </span>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium leading-tight">
+                        {isComplete ? (
+                          <span className="text-emerald-800 font-bold">
+                            Tudo pronto! Você selecionou exatamente as {targetQty} marmitas. Agora clique no botão abaixo para adicionar ao seu pedido.
+                          </span>
+                        ) : remaining > 0 ? (
+                          <span className="text-amber-900">
+                            Selecione mais <strong>{remaining} marmita(s)</strong> para atingir o limite de {targetQty} marmitas deste combo.
+                          </span>
+                        ) : (
+                          <span className="text-red-700 font-bold">
+                            Você ultrapassou o limite do combo! Remova {Math.abs(remaining)} marmita(s).
+                          </span>
+                        )}
+                      </p>
+                      {maxPerDish > 0 && (
+                        <p className="text-[11px] font-bold text-amber-950 bg-white/70 px-2.5 py-1 rounded-lg border border-amber-200/80">
+                          {maxPerDish === 1
+                            ? `Regra do combo: escolha ${targetQty} opções diferentes (máximo de 1 unidade de cada prato).`
+                            : `Regra do combo: máximo de ${maxPerDish}x por prato escolhido (mínimo de ${minDistinct} ${minDistinct === 1 ? 'opção diferente' : 'opções diferentes'} do cardápio).`}
+                        </p>
                       )}
-                    </p>
+                    </div>
                   </div>
                 );
               })()}
@@ -4889,9 +4919,11 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                       {availableDishes.map((dish) => {
                         const qty = comboDishSelections[dish.id] || 0;
                         const cat = categories.find(c => c.id === dish.categoryId);
+                        const maxPerDish = selectedComboProduct.comboMaxPerDish && selectedComboProduct.comboMaxPerDish > 0 ? Number(selectedComboProduct.comboMaxPerDish) : null;
+                        const hitDishLimit = maxPerDish !== null && qty >= maxPerDish;
                         const dishStockLimit = dish.trackStock ? Math.max(0, Number(dish.stockQuantity ?? 0)) : null;
                         const dishRemaining = dishStockLimit !== null ? Math.max(0, dishStockLimit - getCartQtyForProduct(dish.id) - qty) : null;
-                        const canAddMore = currentTotal < targetQty && (dishRemaining === null || dishRemaining > 0);
+                        const canAddMore = currentTotal < targetQty && !hitDishLimit && (dishRemaining === null || dishRemaining > 0);
 
                         return (
                           <div 
@@ -4927,6 +4959,16 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                         : "bg-[#fef3c7] text-[#78350f] border-[#fde68a]"
                                     )}>
                                       {dishStockLimit <= 0 ? 'Esgotado' : `${dishStockLimit} ${dishStockLimit === 1 ? 'unidade' : 'unidades'}`}
+                                    </span>
+                                  )}
+                                  {maxPerDish !== null && (
+                                    <span className={cn(
+                                      "text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap",
+                                      hitDishLimit
+                                        ? "bg-amber-200 text-amber-950 border-amber-400"
+                                        : "bg-gray-100 text-gray-700 border-gray-200"
+                                    )}>
+                                      {hitDishLimit ? `Limite ${qty}/${maxPerDish}` : `Máx. ${maxPerDish}x`}
                                     </span>
                                   )}
                                 </div>
@@ -4977,6 +5019,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                   type="button"
                                   disabled={!canAddMore}
                                   onClick={() => {
+                                    if (hitDishLimit && maxPerDish !== null) {
+                                      toast.error(`Limite deste combo: máximo de ${maxPerDish} ${maxPerDish === 1 ? 'unidade' : 'unidades'} por prato (${dish.title}).`);
+                                      return;
+                                    }
                                     if (dishRemaining !== null && dishRemaining <= 0) {
                                       toast.error(`Estoque máximo atingido para "${dish.title}"!`);
                                       return;

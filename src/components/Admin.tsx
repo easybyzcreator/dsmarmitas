@@ -454,6 +454,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
     isCombo: false,
     onlyInCombo: false,
     comboQuantity: 5,
+    comboMaxPerDish: 0,
     comboAllowedProductIds: [],
     trackStock: false,
     stockQuantity: 0,
@@ -1248,6 +1249,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         isCombo: Boolean(newProduct.isCombo),
         onlyInCombo: Boolean(newProduct.onlyInCombo),
         comboQuantity: typeof newProduct.comboQuantity === 'number' ? newProduct.comboQuantity : 5,
+        comboMaxPerDish: typeof newProduct.comboMaxPerDish === 'number' && newProduct.comboMaxPerDish > 0 ? Math.floor(newProduct.comboMaxPerDish) : 0,
         comboAllowedProductIds: Array.isArray(newProduct.comboAllowedProductIds) ? newProduct.comboAllowedProductIds : [],
         trackStock: Boolean(newProduct.trackStock),
         stockQuantity: Math.max(0, Number(newProduct.stockQuantity) || 0),
@@ -1322,6 +1324,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         isCombo: false,
         onlyInCombo: false,
         comboQuantity: 5,
+        comboMaxPerDish: 0,
         comboAllowedProductIds: [],
         trackStock: false,
         stockQuantity: 0,
@@ -6670,7 +6673,10 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                                   isCombo: product.isCombo || false,
                                   onlyInCombo: product.onlyInCombo || false,
                                   comboQuantity: product.comboQuantity || 5,
+                                  comboMaxPerDish: product.comboMaxPerDish || 0,
                                   comboAllowedProductIds: product.comboAllowedProductIds || [],
+                                  trackStock: product.trackStock || false,
+                                  stockQuantity: typeof product.stockQuantity === 'number' ? product.stockQuantity : 0,
                                   order: product.order,
                                   nutritionalInfo: product.nutritionalInfo
                                 });
@@ -6876,6 +6882,95 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                       <p className="text-[11px] text-gray-500">
                         O cliente só conseguirá adicionar o combo ao pedido quando selecionar exatamente {newProduct.comboQuantity || 5} unidades entre os sabores permitidos.
                       </p>
+                    </div>
+
+                    {/* Limite Máximo por Prato no Combo */}
+                    <div className="space-y-2 pt-2 border-t border-amber-200/60">
+                      <label className="text-xs font-bold uppercase text-gray-800 flex items-center justify-between flex-wrap gap-1">
+                        <span>Limite Máximo de Repetições por Prato (Opcional)</span>
+                        <span className="text-[11px] text-amber-900 font-bold">
+                          {(newProduct.comboMaxPerDish || 0) > 0
+                            ? `Máx. ${newProduct.comboMaxPerDish}x por prato`
+                            : 'Sem limite por prato'}
+                        </span>
+                      </label>
+
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <button
+                          type="button"
+                          onClick={() => setNewProduct({ ...newProduct, comboMaxPerDish: 0 })}
+                          className={cn(
+                            "px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer",
+                            !(newProduct.comboMaxPerDish && newProduct.comboMaxPerDish > 0)
+                              ? "bg-[#865d39] text-white shadow-sm scale-105"
+                              : "bg-white text-gray-700 border border-gray-300 hover:border-gray-400"
+                          )}
+                        >
+                          Sem limite
+                        </button>
+                        {[1, 2, 3, 4, 5].map((maxQty) => (
+                          <button
+                            key={maxQty}
+                            type="button"
+                            onClick={() => setNewProduct({ ...newProduct, comboMaxPerDish: maxQty })}
+                            className={cn(
+                              "px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer",
+                              newProduct.comboMaxPerDish === maxQty
+                                ? "bg-[#865d39] text-white shadow-sm scale-105"
+                                : "bg-white text-gray-700 border border-gray-300 hover:border-gray-400"
+                            )}
+                          >
+                            Máx. {maxQty}x por prato
+                          </button>
+                        ))}
+
+                        <div className="flex items-center gap-1.5 ml-auto sm:ml-2">
+                          <span className="text-[11px] text-gray-500 font-bold">Outro limite:</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={newProduct.comboQuantity || 200}
+                            className="w-20 p-1.5 text-xs rounded-lg border border-gray-300 bg-white text-black font-bold text-center"
+                            value={newProduct.comboMaxPerDish && newProduct.comboMaxPerDish > 0 ? newProduct.comboMaxPerDish : ''}
+                            onChange={e => {
+                              const val = e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value, 10) || 0);
+                              setNewProduct({ ...newProduct, comboMaxPerDish: val });
+                            }}
+                            placeholder="Livre"
+                          />
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const totalCombo = Number(newProduct.comboQuantity) || 5;
+                        const maxPerDish = Number(newProduct.comboMaxPerDish) || 0;
+                        if (maxPerDish <= 0) {
+                          return (
+                            <p className="text-[11px] text-gray-500">
+                              Sem limite: o cliente pode repetir o mesmo prato quantas vezes quiser até atingir {totalCombo} marmitas.
+                            </p>
+                          );
+                        }
+                        const minDistinct = Math.ceil(totalCombo / maxPerDish);
+                        const allowedCount = (newProduct.comboAllowedProductIds || []).length;
+                        const notEnoughDishes = allowedCount > 0 && allowedCount < minDistinct;
+
+                        return (
+                          <div className="space-y-1.5">
+                            <div className="p-2.5 rounded-lg bg-white/90 border border-amber-200 text-[11px] text-amber-950 font-medium">
+                              <strong>Regra exibida para o cliente:</strong>{' '}
+                              {maxPerDish === 1
+                                ? `Pode escolher no máximo 1 unidade de cada prato (${totalCombo} opções diferentes).`
+                                : `Pode escolher no máximo ${maxPerDish}x de cada prato (mínimo de ${minDistinct} ${minDistinct === 1 ? 'opção diferente' : 'opções diferentes'} para completar ${totalCombo} marmitas).`}
+                            </div>
+                            {notEnoughDishes && (
+                              <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-[11px] text-red-700 font-bold">
+                                Atenção: com limite de {maxPerDish}x por prato em um combo de {totalCombo}, selecione pelo menos {minDistinct} pratos permitidos abaixo (atualmente há apenas {allowedCount}).
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Seleção de Pratos Permitidos no Combo */}
@@ -7892,7 +7987,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                         title: '', description: '', price: 0, oldPrice: 0, priceType: 'fixed',
                         image: '', categoryId: '', isMeal: true, isCustomCake: false, isCustomSandwich: false, customFillings: '', ingredients: '', allowedSides: [], isActive: true,
                         hasSizes: false, sizes: [],
-                        isCombo: false, onlyInCombo: false, comboQuantity: 5, comboAllowedProductIds: [],
+                        isCombo: false, onlyInCombo: false, comboQuantity: 5, comboMaxPerDish: 0, comboAllowedProductIds: [],
                         trackStock: false, stockQuantity: 0,
                         nutritionalInfo: {
                           calories: '',
@@ -7988,6 +8083,7 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
                               isCombo: product.isCombo || false,
                               onlyInCombo: product.onlyInCombo || false,
                               comboQuantity: product.comboQuantity || 5,
+                              comboMaxPerDish: product.comboMaxPerDish || 0,
                               comboAllowedProductIds: product.comboAllowedProductIds || [],
                               trackStock: product.trackStock || false,
                               stockQuantity: typeof product.stockQuantity === 'number' ? product.stockQuantity : 0,
@@ -8099,15 +8195,22 @@ ${order.deliveryFee && Number(order.deliveryFee) > 0 ? `SUBTOTAL: ${currencySymb
 
                       {product.isCombo && (
                         <div className="bg-amber-50 border border-amber-200 p-2.5 rounded-xl text-[11px] space-y-1 mt-2 text-amber-950">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
                             <span className="font-bold text-amber-950 flex items-center gap-1">
                               🍱 Combo ({product.comboQuantity || 5} marmitas)
                             </span>
-                            <span className="text-[10px] text-amber-800 font-bold">
-                              {product.comboAllowedProductIds && product.comboAllowedProductIds.length > 0
-                                ? `${product.comboAllowedProductIds.length} prato(s) permitidos`
-                                : 'Todos pratos liberados'}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {product.comboMaxPerDish && product.comboMaxPerDish > 0 && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-950 font-black">
+                                  Máx. {product.comboMaxPerDish}x por prato
+                                </span>
+                              )}
+                              <span className="text-[10px] text-amber-800 font-bold">
+                                {product.comboAllowedProductIds && product.comboAllowedProductIds.length > 0
+                                  ? `${product.comboAllowedProductIds.length} prato(s) permitidos`
+                                  : 'Todos pratos liberados'}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       )}
