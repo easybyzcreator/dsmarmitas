@@ -2176,7 +2176,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         }
                       }}
                       className={cn(
-                        "glass rounded-2xl p-3.5 sm:p-4 md:p-5 flex gap-3.5 sm:gap-4 items-start sm:items-center cursor-pointer hover:shadow-md transition-all duration-300 w-full",
+                        "glass rounded-2xl p-3.5 sm:p-4 md:p-5 flex gap-3 sm:gap-4 items-start sm:items-center cursor-pointer hover:shadow-md transition-all duration-300 w-full overflow-hidden",
                         isProductOutOfStock(product) && "opacity-75"
                       )}
                     >
@@ -2184,56 +2184,60 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         <img src={product.image} alt={product.title} className="w-full h-full object-cover" />
                       </div>
                       <div className="flex-1 min-w-0 text-black flex flex-col justify-between self-stretch gap-2">
-                        <div className="space-y-1">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-wrap min-w-0">
-                              <h3 className="text-sm sm:text-base md:text-lg font-serif font-bold text-black leading-snug">
+                        <div className="space-y-1.5 min-w-0">
+                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1.5 w-full min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1">
+                              <h3 className="text-sm sm:text-base md:text-lg font-serif font-bold text-black leading-snug break-words">
                                 {product.title}
                               </h3>
                               {product.trackStock && (() => {
                                 const stockQty = Math.max(0, Number(product.stockQuantity ?? 0));
                                 return stockQty > 0 ? (
-                                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
+                                  <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
                                     {stockQty} {stockQty === 1 ? 'unidade' : 'unidades'}
                                   </span>
                                 ) : (
-                                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 whitespace-nowrap">
+                                  <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 whitespace-nowrap">
                                     Esgotado
                                   </span>
                                 );
                               })()}
                             </div>
-                            <div className="flex items-center gap-1.5 flex-wrap justify-end shrink-0">
-                              {(() => {
-                                const tracked = Boolean(product.trackStock) || Boolean(product.hasSizes && product.sizes?.some(s => typeof s.stockQuantity === 'number'));
-                                if (!tracked) return null;
-                                const out = isProductOutOfStock(product);
-                                return out ? (
-                                  <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-red-600 text-white whitespace-nowrap shadow-xs">
-                                    ESGOTADO
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#047857] text-white whitespace-nowrap shadow-xs">
-                                    PRONTA ENTREGA
-                                  </span>
-                                );
-                              })()}
-                              {product.isCombo && (
-                                <>
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
-                                    🍱 Combo {product.comboQuantity || 5} marmitas
-                                  </span>
-                                  {product.comboMaxPerDish && product.comboMaxPerDish > 0 && (
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
-                                      Máx. {product.comboMaxPerDish}x por prato
-                                    </span>
+                            {(() => {
+                              const tracked = Boolean(product.trackStock) || Boolean(product.hasSizes && product.sizes?.some(s => typeof s.stockQuantity === 'number'));
+                              if (!tracked && !product.isCombo) return null;
+                              const out = isProductOutOfStock(product);
+                              return (
+                                <div className="flex items-center gap-1.5 flex-wrap max-w-full sm:max-w-[52%] sm:justify-end">
+                                  {tracked && (
+                                    out ? (
+                                      <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-red-600 text-white whitespace-nowrap shadow-xs">
+                                        ESGOTADO
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-[#047857] text-white whitespace-nowrap shadow-xs">
+                                        PRONTA ENTREGA
+                                      </span>
+                                    )
                                   )}
-                                </>
-                              )}
-                            </div>
+                                  {product.isCombo && (
+                                    <>
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-950 border border-amber-500/30 whitespace-nowrap">
+                                        🍱 Combo {product.comboQuantity || 5} marmitas
+                                      </span>
+                                      {product.comboMaxPerDish && product.comboMaxPerDish > 0 && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#fef3c7] text-[#78350f] border border-[#fde68a] whitespace-nowrap">
+                                          Máx. {product.comboMaxPerDish}x por prato
+                                        </span>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                           {product.description && (
-                            <p className="text-[11px] sm:text-xs text-black/75 leading-relaxed line-clamp-2">
+                            <p className="text-[11px] sm:text-xs text-black/75 leading-relaxed line-clamp-2 break-words">
                               {product.description}
                             </p>
                           )}
@@ -2269,40 +2273,40 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                         </div>
 
                         {/* Bottom Row: Price on left, Action Button on right */}
-                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-black/5 mt-auto">
-                          <div className="flex flex-col items-start">
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-black/5 mt-auto">
+                          <div className="flex flex-col items-start min-w-0">
                             {(product.isCustomCake || product.priceType === 'consult') ? (
-                              <span className="text-[9px] sm:text-[10px] uppercase font-serif font-black tracking-wider px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-950 border border-amber-500/20">
+                              <span className="text-[9px] sm:text-[10px] uppercase font-serif font-black tracking-wider px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-950 border border-amber-500/20 whitespace-nowrap">
                                 {settings.language === 'en' ? 'On Request' : 'A Consultar'}
                               </span>
                             ) : product.sizes && product.sizes.length > 0 ? (
-                              <p className="text-xs sm:text-base font-bold" style={{ color: settings.primaryColor }}>
+                              <p className="text-xs sm:text-base font-bold whitespace-nowrap" style={{ color: settings.primaryColor }}>
                                 A partir de {currencySymbol}{Math.min(...product.sizes.map(s => s.price)).toFixed(2)}
                               </p>
                             ) : ((product.price && product.price > 0) || (product.oldPrice && product.oldPrice > 0)) ? (
-                              <div className="flex items-baseline gap-1.5">
+                              <div className="flex items-baseline gap-1.5 flex-wrap">
                                 {Boolean(product.price && product.price > 0 && product.oldPrice && product.oldPrice > 0) && (
-                                  <span className="text-[10px] sm:text-xs line-through opacity-40">
+                                  <span className="text-[10px] sm:text-xs line-through opacity-40 whitespace-nowrap">
                                     {currencySymbol}{product.oldPrice.toFixed(2)}
                                   </span>
                                 )}
-                                <p className="text-sm sm:text-base font-black font-serif" style={{ color: settings.primaryColor }}>
+                                <p className="text-sm sm:text-base font-black font-serif whitespace-nowrap" style={{ color: settings.primaryColor }}>
                                   {currencySymbol}{(product.price && product.price > 0 ? product.price : product.oldPrice).toFixed(2)}
                                 </p>
                               </div>
                             ) : (
-                              <span className="text-[9px] sm:text-[10px] uppercase font-serif font-black tracking-wider px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-950 border border-amber-500/20">
+                              <span className="text-[9px] sm:text-[10px] uppercase font-serif font-black tracking-wider px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-950 border border-amber-500/20 whitespace-nowrap">
                                 {settings.language === 'en' ? 'On Request' : 'A Consultar'}
                               </span>
                             )}
                           </div>
 
-                          <div className="flex-shrink-0 flex items-center justify-end cart-button-area pl-1 z-10">
+                          <div className="flex-shrink-0 flex items-center justify-end cart-button-area z-10 ml-auto">
                             {(() => {
                               const outOfStock = isProductOutOfStock(product);
                               if (outOfStock) {
                                 return (
-                                  <span className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-black text-[11px] uppercase tracking-wider">
+                                  <span className="px-3 py-1.5 rounded-full bg-red-100 text-red-700 border border-red-200 font-black text-[11px] uppercase tracking-wider whitespace-nowrap">
                                     Esgotado
                                   </span>
                                 );
@@ -2317,10 +2321,10 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
                                       setComboDishSelections({});
                                       setComboSearchTerm('');
                                     }}
-                                    className="px-3.5 py-1.5 rounded-full shadow-md font-bold text-xs hover:scale-105 active:scale-95 transition-all cursor-pointer flex items-center gap-1.5 focus:outline-none"
+                                    className="px-3 py-1.5 sm:px-3.5 rounded-full shadow-md font-bold text-[11px] sm:text-xs hover:scale-105 active:scale-95 transition-all cursor-pointer flex items-center gap-1 focus:outline-none whitespace-nowrap"
                                     style={{ backgroundColor: settings.primaryColor, color: getContrastText(settings.primaryColor) }}
                                   >
-                                    <Plus size={14} />
+                                    <Plus size={13} />
                                     <span>Montar Combo</span>
                                   </button>
                                 );
